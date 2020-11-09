@@ -41,7 +41,7 @@ shinyServer(function(input, output, session) {
     maxt.slc <- var.maxt %>% hyper_filter(time = between(time, input$timeFilter, input$timeFilter)) %>% hyper_tibble()
     
     ggplot() +
-      geom_raster(data = maxt.slc, aes(x = lon - 360, y = lat, fill = MAXT)) +
+      geom_raster(data = maxt.slc, aes(x = lon - 360, y = lat, fill = MAXT), interpolate = TRUE) +
       # Reds color pallete for heat map
       scale_fill_distiller(palette = "Reds") +
       geom_sf(data = world.map, fill = NA) +
@@ -64,7 +64,7 @@ shinyServer(function(input, output, session) {
     mint.slc <- var.mint %>% hyper_filter(time = between(time, input$timeFilter, input$timeFilter)) %>% hyper_tibble()
     
     ggplot() +
-      geom_raster(data = mint.slc, aes(x = lon - 360, y = lat, fill = MINT)) +
+      geom_raster(data = mint.slc, aes(x = lon - 360, y = lat, fill = MINT), interpolate = TRUE) +
       # Reds color pallete for heat map
       geom_sf(data = world.map, fill = NA) +
       # Draws US states map
@@ -89,7 +89,7 @@ shinyServer(function(input, output, session) {
     data <- full_join(maxt.slc, mint.slc) %>% mutate(DIFF = MAXT - MINT)
     
     ggplot() +
-      geom_raster(data = data, aes(x = lon - 360, y = lat, fill = DIFF)) +
+      geom_raster(data = data, aes(x = lon - 360, y = lat, fill = DIFF), interpolate = TRUE) +
       # Reds color pallete for heat map
       scale_fill_distiller(palette = "Purples") +
       geom_sf(data = world.map, fill = NA) +
@@ -112,7 +112,7 @@ shinyServer(function(input, output, session) {
     prec.slc <- var.prec %>% hyper_filter(time = between(time, input$timeFilter, input$timeFilter)) %>% hyper_tibble()
     
     ggplot() +
-      geom_raster(data = prec.slc, aes(x = lon - 360, y = lat, fill = PREC)) +
+      geom_raster(data = prec.slc, aes(x = lon - 360, y = lat, fill = PREC), interpolate = TRUE) +
       # Reds color pallete for heat map
       scale_fill_distiller(palette = "Greens") +
       geom_sf(data = world.map, fill = NA) +
