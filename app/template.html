@@ -1,47 +1,92 @@
 <html>
-    <head>
-        {{ headContent() }}
-        {{ bootstrapLib() }}
-        <style>
-            .shiny-datatable-output {
-                font-size: 10px !important;
-            }
-        </style>
-    </head>
-    <body>
-        <h2 class="text-center">ERA-Interim Dataset</h2>
-        <div class="container-fluid">
-            <div class="row">
-                <div class="col-lg-12">
-                    <div class="row">
-                        <div class="col-lg-12">
-                            {{ sliderInput("timeFilter", "Time", min = 0, max = 14244, value = 0, width="100%" ) }}
+
+<head>
+    {{ headContent() }}
+    {{ bootstrapLib() }}
+    <link rel="stylesheet" href="vender/bootstrap/css/bootstrap.min.css">
+    <style>
+        .shiny-datatable-output {
+            font-size: 10px !important;
+        }
+        #coor {
+            font-weight: bold;
+            font-size: larger;
+        }
+    </style>
+</head>
+
+<body>
+    <h2 class="text-center">{{ textOutput("title")}}</h2>
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-lg-2">
+                {{ radioButtons("baseData", "Base Data", choices = c("CESM-LENS", "ERA-Interim", "WRF Lieu et. el."), selected = "ERA-Interim" ) }}
+                <hr>
+                <p>
+                    Data loaded must be in csv format and should be reduced as much as possible to avoid long load time.
+                    Also longitude and latitude data must be labeled as "lon" and "lat", respectively.
+                </p>
+                {{ fileInput("dataFile", "Load Data", accept = c("text/csv","text/comma-separated-values,text/plain",".csv")) }}
+            </div>
+            <div class="col-lg-10">
+                <ul class="nav nav-tabs">
+                    <li class="nav-item active">
+                        <a href="#main" data-toggle="tab" class="nav-link active">Main</a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="#data" data-toggle="tab" class="nav-link">Data</a>
+                    </li>
+                </ul>
+                <div class="tab-content">
+                    <div class="tab-pane fade active in" id="main" role="tabpanel">
+                        <div class="container-fluid">
+                            <div class="row">
+                                <div class="col-lg-12">
+                                    <div class="row">
+                                        <div class="col-lg-12 text-center">
+                                            <h3>
+                                                {{ textOutput("date") }}
+                                            </h3>
+                                            {{ sliderInput("timeFilter", "", min = 0, max = 14244, value = 0, width="100%") }}
+                                            <p>
+                                                {{ textOutput("coor") }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-lg-6">
+                                            {{ plotOutput("maxt", hover="plot_hover") }}
+                                        </div>
+                                        <div class="col-lg-6">
+                                            {{ plotOutput("mint", hover="plot_hover") }}
+                                        </div>
+                                        <div class="col-lg-6">
+                                            {{ plotOutput("diff", hover="plot_hover") }}
+                                        </div>
+                                        <div class="col-lg-6">
+                                            {{ plotOutput("prec", hover="plot_hover") }}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    <h3 class="text-center">{{ textOutput("date") }}</h3>
-                    <div class="row">
-                        <div class="col-lg-6">
-                            {{ plotOutput("maxt") }}
-                        </div>
-                        <div class="col-lg-6">
-                            {{ plotOutput("mint") }}
-                        </div>
-                        <div class="col-lg-6">
-                            {{ plotOutput("diff") }}
-                        </div>
-                        <div class="col-lg-6">
-                            {{ plotOutput("prec") }}
+                    <div class="tab-pane fade" id="data" role="tabpanel">
+                        <div class="container-fluid">
+                            <div class="row">
+                                <div class="col-lg-6" style="font-size: 10px; padding-top: 4em; padding-bottom: 4em">
+                                    {{ dataTableOutput("dataset") }}
+                                </div>
+                                <div class="col-lg-6"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div> 
-            <div class="row">
-                <div class="col-lg-3"></div>
-                <div class="col-lg-6" style="font-size: 10px; padding-top: 4em; padding-bottom: 4em">
-                    {{ dataTableOutput("dataset") }}
-                </div>
-                <div class="col-lg-3"></div>
             </div>
         </div>
-    </body>
+    </div>
+    <script src="vender/jquery/jquery.min.js"></script>
+    <script src="vender/bootstrap/js/bootstrap.bundle.min.js"></script>
+</body>
+
 </html>
