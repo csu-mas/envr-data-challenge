@@ -108,6 +108,7 @@ server <- function(input, output, session) {
       geom_raster(aes(x = lon, y = lat, fill = MAXT), interpolate = TRUE) +
       scale_fill_distiller(palette = "Reds") +
       base.map +
+      labs(x = NULL, y = NULL) +
       geom_point(
         x = update$coor()$lon,
         y = update$coor()$lat,
@@ -124,6 +125,7 @@ server <- function(input, output, session) {
       ggtitle("Minimum") +
       geom_raster(aes(x = lon , y = lat, fill = MINT), interpolate = TRUE) +
       base.map +
+      labs(x = NULL, y = NULL) +
       geom_point(
         x = update$coor()$lon,
         y = update$coor()$lat,
@@ -141,6 +143,7 @@ server <- function(input, output, session) {
       geom_raster(aes(x = lon, y = lat, fill = DIFF), interpolate = TRUE) +
       scale_fill_distiller(palette = "Purples") +
       base.map +
+      labs(x = NULL, y = NULL) +
       geom_point(
         x = update$coor()$lon,
         y = update$coor()$lat,
@@ -158,6 +161,7 @@ server <- function(input, output, session) {
       geom_raster(aes(x = lon, y = lat, fill = PREC), interpolate = TRUE) +
       scale_fill_distiller(palette = "Greens") +
       base.map +
+      labs(x = NULL, y = NULL) +
       geom_point(
         x = update$coor()$lon,
         y = update$coor()$lat,
@@ -203,7 +207,7 @@ server <- function(input, output, session) {
       scale_x_date(date_breaks = "1 year", date_minor_breaks = "1 month") +
       geom_vline(xintercept = update$timeFilter(),
                  color = "orange") +
-      labs(x = NULL, y = "Temperature") +
+      labs(x = NULL, y = NULL) +
       theme_minimal() +
       theme(axis.text.x = element_text(angle = 60, vjust = .5))
   })
