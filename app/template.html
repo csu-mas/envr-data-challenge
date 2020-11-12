@@ -20,18 +20,22 @@
     <div class="container-fluid">
         <div class="row">
             <div class="col-lg-2">
-                {{ radioButtons("baseData", "Base Data", choices = c("CESM-LENS", "ERA-Interim", "WRF Lieu et. el."), selected = "ERA-Interim" ) }}
-                <hr>
                 <p>
                     Data loaded must be in csv format and should be reduced as much as possible to avoid long load time.
                     Also longitude and latitude data must be labeled as "lon" and "lat", respectively.
                 </p>
                 {{ fileInput("dataFile", "Load Data", accept = c("text/csv","text/comma-separated-values,text/plain",".csv")) }}
+                <hr>
+                {{ radioButtons("baseData", "Base Data", choices = c("CESM-LENS", "ERA-Interim", "WRF Lieu et. el."), selected = "ERA-Interim" ) }}
+                {{ airDatepickerInput("timeFilter", "time", minDate = "1979-01-02", maxDate = "2018-01-01", value="1979-01-02", startView="1979-01-01", view = "years") }}
+                {{ sliderInput("lon", "lon", min = 223.5 - 360, max = 301.5 - 360, step = .75, value=262.5 - 360) }}
+                {{ sliderInput("lat", "lat", min = 17.25, max = 55.5, step = .75, value=36.75) }}
+                {{ sliderInput("trend", "magnification", min = 1/8, max = 30, step = 1/8, value=1) }}
             </div>
             <div class="col-lg-10">
                 <ul class="nav nav-tabs">
                     <li class="nav-item active">
-                        <a href="#main" data-toggle="tab" class="nav-link active">Main</a>
+                        <a href="#main" data-toggle="tab" class="nav-link active">Map</a>
                     </li>
                     <li class="nav-item">
                         <a href="#data" data-toggle="tab" class="nav-link">Data</a>
@@ -43,11 +47,9 @@
                             <div class="row">
                                 <div class="col-lg-12">
                                     <div class="row">
+                                    </div>
+                                    <div class="row">
                                         <div class="col-lg-12 text-center">
-                                            <h3>
-                                                {{ textOutput("date") }}
-                                            </h3>
-                                            {{ sliderInput("timeFilter", "", min = 0, max = 14244, value = 0, width="100%") }}
                                             <p>
                                                 {{ textOutput("coor") }}
                                             </p>
@@ -55,16 +57,29 @@
                                     </div>
                                     <div class="row">
                                         <div class="col-lg-6">
-                                            {{ plotOutput("maxt", hover="plot_hover") }}
+                                            {{ addSpinner(plotOutput("maxt", hover="plot_hover", click="plot_click"), spin = "circle", color = "#1565C0") }}
                                         </div>
                                         <div class="col-lg-6">
-                                            {{ plotOutput("mint", hover="plot_hover") }}
+                                            {{ addSpinner(plotOutput("line1"), spin = "circle", color = "#1565C0") }}
                                         </div>
                                         <div class="col-lg-6">
-                                            {{ plotOutput("diff", hover="plot_hover") }}
+                                            {{ addSpinner(plotOutput("mint", hover="plot_hover", click="plot_click"), spin = "circle", color = "#1565C0") }}
                                         </div>
                                         <div class="col-lg-6">
-                                            {{ plotOutput("prec", hover="plot_hover") }}
+                                            {{ addSpinner(plotOutput("line2"), spin = "circle", color = "#1565C0") }}
+                                        </div>
+                                        <div class="col-lg-6">
+                                            {{ addSpinner(plotOutput("diff", hover="plot_hover", click="plot_click"), spin = "circle", color = "#1565C0") }}
+                                        </div>
+                                        <div class="col-lg-6">
+                                            {{ addSpinner(plotOutput("line3"), spin = "circle", color = "#1565C0") }}
+                                        </div>
+
+                                        <div class="col-lg-6">
+                                            {{ addSpinner(plotOutput("prec", hover="plot_hover", click="plot_click"), spin = "circle", color = "#1565C0") }}
+                                        </div>
+                                        <div class="col-lg-6">
+                                            {{ addSpinner(plotOutput("line4"), spin = "circle", color = "#1565C0") }}
                                         </div>
                                     </div>
                                 </div>
@@ -75,7 +90,7 @@
                         <div class="container-fluid">
                             <div class="row">
                                 <div class="col-lg-6" style="font-size: 10px; padding-top: 4em; padding-bottom: 4em">
-                                    {{ dataTableOutput("dataset") }}
+                                    {{ dataTableOutput("basedata") }}
                                 </div>
                                 <div class="col-lg-6"></div>
                             </div>

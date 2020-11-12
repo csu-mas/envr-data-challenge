@@ -1,111 +1,229 @@
 library(shiny)
+library(shinyWidgets)
 library(ggplot2)
-library(maps)
-library(sf)
-library(tools)
 library(tidync)
 library(dplyr)
 
-#### TODO: Add ability to load netCDF files from DropBox
+source("map-data.R")
+
 var.maxt <- tidync("../data/era-interim/MAXT.nc")
 var.mint <- tidync("../data/era-interim/MINT.nc")
 var.prec <- tidync("../data/era-interim/PREC.nc")
 
 #######################################################################################################
-####################################         BASE MAP DATA         #################################### 
-#######################################################################################################
-# This map data is from ggplot2. Map data can easily be replaced with raster maps from Google Maps, 
-# Statem, or OpenStreetMaps using the ggmaps package. The maps can be skinned with roads, terrain,
-# buildings, etc. This may be useful depending on what our research question will be.
-map <- st_as_sf(map("world", plot = FALSE, fill = TRUE))
-map <- cbind(map, st_coordinates(st_centroid(map)))
-map$ID <- toTitleCase(as.vector(map$ID))
-map$ID <- ifelse(map$ID == "USA", "", map$ID)
-
-us.states <- map_data("state")
-us.states <- st_as_sf(map("state", plot = FALSE, fill = TRUE))
-us.states <- cbind(us.states, st_coordinates(st_centroid(us.states)))
-us.states$ID <- toTitleCase(as.vector(us.states$ID))
-
-world.map <- st_as_sf(map("world", plot = FALSE, fill = TRUE))
-world.map <- cbind(map, st_coordinates(st_centroid(map)))
-
-base.map <- c(geom_sf(data = world.map, fill = NA),
-              geom_text(data = map, aes(X, Y, label = ID), size = 2),
-              geom_sf(data = us.states, fill = NA),
-              geom_text(data = us.states, aes(X, Y, label = ID), size = 2),
-              coord_sf(xlim = c(min(var.maxt$transforms$lon$lon) - 360, 
-                                max(var.maxt$transforms$lon$lon) - 360), 
-                       ylim = c(min(var.maxt$transforms$lat$lat), 
-                                max(var.maxt$transforms$lat$lat)), 
-                       expand = FALSE))
-
-#######################################################################################################
-#########################################         UI         ########################################## 
-#######################################################################################################
-ui <- function(request) { htmlTemplate("../app/template.html") }
-
-#######################################################################################################
-#######################################         SERVER         ######################################## 
+#######################################         SERVER         ########################################
 #######################################################################################################
 server <- function(input, output, session) {
-  dataset <- reactive({
-    switch (input$baseData,
-            "CESM-LENS" = {
-              
-            },
-            "ERA-Interim" = {
-              maxt.slc <- var.maxt %>% hyper_filter(time = between(time, input$timeFilter, input$timeFilter)) %>% hyper_tibble()
-              mint.slc <- var.mint %>% hyper_filter(time = between(time, input$timeFilter, input$timeFilter)) %>% hyper_tibble()
-              prec.slc <- var.prec %>% hyper_filter(time = between(time, input$timeFilter, input$timeFilter)) %>% hyper_tibble()
-              
-              full_join(maxt.slc, mint.slc) %>% full_join(prec.slc) %>% 
-                mutate(DIFF = MAXT - MINT, lon = lon - 360) %>% 
-                select(lon, lat, MAXT, MINT, DIFF, PREC)
-            },
-            "WRF et. el." = {
-              
-            })
-  })
-
+  update <- list(
+    timeFilter = reactive({ input$timeFilter }),
+    coor = reactive({list(lon = input$lon, lat = input$lat)}),
+    basedata = reactive({
+      switch (
+        input$baseData,
+        "CESM-LENS" = {
+          
+        },
+        "ERA-Interim" = {
+          maxt.slc <-
+            var.maxt %>% hyper_filter(time = between(
+              as.Date(time, origin = "1979-01-01"),
+              input$timeFilter,
+              input$timeFilter
+            )) %>% hyper_tibble()
+          mint.slc <-
+            var.mint %>% hyper_filter(time = between(
+              as.Date(time, origin = "1979-01-01"),
+              input$timeFilter,
+              input$timeFilter
+            )) %>% hyper_tibble()
+          prec.slc <-
+            var.prec %>% hyper_filter(time = between(
+              as.Date(time, origin = "1979-01-01"),
+              input$timeFilter,
+              input$timeFilter
+            )) %>% hyper_tibble()
+          
+          full_join(maxt.slc, mint.slc, by = c("lon", "lat", "time")) %>% full_join(prec.slc, by = c("lon", "lat", "time")) %>%
+            mutate(DIFF = MAXT - MINT, lon = lon - 360) %>%
+            select(lon, lat, MAXT, MINT, DIFF, PREC)
+        },
+        "WRF et. el." = {
+          
+        }
+      )
+    }),
+    linedata = reactive({
+        time <- input$timeFilter
+        multiplier <- input$trend
+        range <- c(time - (360 * multiplier), time + (360 * multiplier))
+        
+        maxt.slc <-
+          var.maxt %>% hyper_filter(
+            lon = lon == input$lon + 360,
+            lat = lat == input$lat,
+            time = between(as.Date(time, origin =
+                                     "1979-01-01"), range[1], range[2])
+          ) %>% hyper_tibble()
+        
+        mint.slc <-
+          var.mint %>% hyper_filter(
+            lon = lon == input$lon + 360,
+            lat = lat == input$lat,
+            time = between(as.Date(time, origin =
+                                     "1979-01-01"), range[1], range[2])
+          ) %>% hyper_tibble()
+        
+        prec.slc <-
+          var.prec %>% hyper_filter(
+            lon = lon == input$lon + 360,
+            lat = lat == input$lat,
+            time = between(as.Date(time, origin =
+                                     "1979-01-01"), range[1], range[2])
+          ) %>% hyper_tibble()
+        
+        full_join(maxt.slc, mint.slc, by = c("lon", "lat", "time")) %>% full_join(prec.slc, by = c("lon", "lat", "time")) %>%
+          mutate(DIFF = MAXT - MINT, lon = lon - 360) %>%
+          select(time, lon, lat, MAXT, MINT, DIFF, PREC)
+      })
+  )
+  
   output$title <- renderText(input$baseData)
   output$coor <- renderText(paste("lon:", input$plot_hover$x[1],
                                   "lat:", input$plot_hover$y[1]))
   
-  output$dataset <- renderDataTable({ dataset() })
-  output$date <- renderText(as.character(as.Date(input$timeFilter, origin = "1979-01-01")))
+  observeEvent(input$plot_click, {
+    x <- round((input$plot_click$x[1] + 136.5) / 0.75) * 0.75 - 136.5
+    y <- round((input$plot_click$y[1] - 17.25) / 0.75) * 0.75 + 17.25
+    
+    updateSliderInput(session, "lon", value = x)
+    updateSliderInput(session, "lat", value = y)
+  })
+  
+  #### MAIN TAB
   output$maxt <- renderPlot({
-    ggplot() +
+    base <- update$basedata()
+    
+    ggplot(base) +
       ggtitle("Maximum") +
-      geom_raster(data = dataset(), aes(x = lon, y = lat, fill = MAXT), interpolate = TRUE) +
+      geom_raster(aes(x = lon, y = lat, fill = MAXT), interpolate = TRUE) +
       scale_fill_distiller(palette = "Reds") +
       base.map +
+      geom_point(
+        x = update$coor()$lon,
+        y = update$coor()$lat,
+        color = "white",
+        shape = "cross",
+        size = 2
+      ) +
       theme_bw()
   })
   output$mint <- renderPlot({
-    ggplot() +
+    base <- update$basedata()
+    
+    ggplot(base) +
       ggtitle("Minimum") +
-      geom_raster(data = dataset(), aes(x = lon , y = lat, fill = MINT), interpolate = TRUE) +
+      geom_raster(aes(x = lon , y = lat, fill = MINT), interpolate = TRUE) +
       base.map +
+      geom_point(
+        x = update$coor()$lon,
+        y = update$coor()$lat,
+        color = "white",
+        shape = "cross",
+        size = 2
+      ) +
       theme_bw()
   })
   output$diff <- renderPlot({
-    ggplot() +
+    base <- update$basedata()
+    
+    ggplot(base) +
       ggtitle("Difference") +
-      geom_raster(data = dataset(), aes(x = lon, y = lat, fill = DIFF), interpolate = TRUE) +
+      geom_raster(aes(x = lon, y = lat, fill = DIFF), interpolate = TRUE) +
       scale_fill_distiller(palette = "Purples") +
       base.map +
+      geom_point(
+        x = update$coor()$lon,
+        y = update$coor()$lat,
+        color = "white",
+        shape = "cross",
+        size = 2
+      ) +
       theme_bw()
   })
   output$prec <- renderPlot({
-    ggplot() +
+    base <- update$basedata()
+    
+    ggplot(base) +
       ggtitle("Precipitation") +
-      geom_raster(data = dataset(), aes(x = lon, y = lat, fill = PREC), interpolate = TRUE) +
+      geom_raster(aes(x = lon, y = lat, fill = PREC), interpolate = TRUE) +
       scale_fill_distiller(palette = "Greens") +
       base.map +
+      geom_point(
+        x = update$coor()$lon,
+        y = update$coor()$lat,
+        color = "white",
+        shape = "cross",
+        size = 2
+      ) +
       theme_bw()
+  })
+  
+  output$line1 <- renderPlot({
+    base <- update$linedata()
+    
+    ggplot(base) +
+      geom_line(aes(x = as.Date(time, origin = "1979-01-01"), y = MAXT), color = "red") +
+      scale_x_date(date_breaks = "1 year", date_minor_breaks = "1 month") +
+      geom_vline(xintercept = update$timeFilter(),
+                 color = "orange") +
+      labs(x = NULL, y = NULL) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60, vjust = .5))
+  })
+  output$line2 <- renderPlot({
+    base <- update$linedata()
+    
+    ggplot(base) +
+      geom_line(aes(x = as.Date(time, origin = "1979-01-01"), y = MINT), color = "blue") +
+      scale_x_date(date_breaks = "1 year", date_minor_breaks = "1 month") +
+      geom_vline(xintercept = update$timeFilter(),
+                 color = "orange") +
+      labs(x = NULL, y = NULL) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60, vjust = .5))
+  })
+  output$line3 <- renderPlot({
+    base <- update$linedata()
+    
+    ggplot(base) +
+      geom_line(aes(
+        x = as.Date(time, origin = "1979-01-01"),
+        y = MAXT - MINT
+      ), color = "purple") +
+      scale_x_date(date_breaks = "1 year", date_minor_breaks = "1 month") +
+      geom_vline(xintercept = update$timeFilter(),
+                 color = "orange") +
+      labs(x = NULL, y = "Temperature") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60, vjust = .5))
+  })
+  output$line4 <- renderPlot({
+    base <- update$linedata()
+    
+    ggplot(base) +
+      geom_line(aes(x = as.Date(time, origin = "1979-01-01"), y = PREC), color = "green") +
+      scale_x_date(date_breaks = "1 year", date_minor_breaks = "1 month") +
+      geom_vline(xintercept = update$timeFilter(),
+                 color = "orange") +
+      labs(x = NULL, y = NULL) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 60, vjust = .5))
+  })
+  
+  #### DATA TAB
+  output$basedata <- renderDataTable({
+    update$basedata()
   })
 }
 
-shinyApp(ui, server, enableBookmarking = "url")
-
+shinyApp(htmlTemplate("../app/template.html"), server, enableBookmarking = "url")
