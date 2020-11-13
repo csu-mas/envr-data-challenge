@@ -1,0 +1,286 @@
+---
+title: "Modeling ERA Data"
+output: html_notebook
+---
+
+One important issue Phong brought up in the data-wrangling script is: "The challenge will probably be in merging spatial data on different scales. Maybe we could just place the data that falls in the square space of the climate data." In examining the ERA-interim data, we can see that the observations are on fairly coarse scales, e.g. observations 1 to 0.5 degrees in latitude and longitude. It seems restrictive to only merge data based on common columns, as this may significantly reduce the number of observations we are able to use. We also may want to quantify any uncertainty if we pool neighboring observations together. An alternative is to generate a predictive model for the climate data, namely smooth the observations given latitude and longitude, so that we can interpolate between observations, and quantify the uncertainty for the smoothing. 
+
+(GAMs or generalized additive models, in a nutshell, are a non-linear modeling techique where we fit splines to the data, which give a means of interpolation between observations and qualitative/quantitative assessment of the structure in the data. The `mgcv` package provides the infrastructure to do this. The fitting with `gam` increases in time as we add more data points, and as we choose more exotic families to fit. The `bam` function is useful for big data-sets, and can use most of the families that `gam()` uses.) 
+
+## Preparing the Data
+
+First, we load in the relevant libraries for exploring netCDF files, and for analysis/plotting:
+
+```{r, warning = F, message = F}
+library(tidyr)
+library(RNetCDF)
+library(tidync)
+library(ncmeta)
+library(dplyr)
+library(ggplot2)
+##library(tools)
+##library(sf)
+##library(maps)
+##library(patchwork)
+library(mgcv)
+library(gratia)
+```
+
+Set the file paths to the data-sets and source the script using the `source()` function, containing the custom functions written by Phong:
+
+```{r}
+file.maxt <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/MAXT.nc" # Maximum temperature
+file.mint <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/MINT.nc" # Minimum temperature
+file.prec <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/PREC.nc" # Precipitation
+
+source('C:/Users/jddru/Desktop/ASAENVR/notebook_template/load_netcdf.R')
+```
+
+
+To begin lets just look at the first time slice. We apply the `getCDF.data()` function from the script to obtain data-frames: 
+
+```{r}
+maxt.df <- getCDF.data(filePath = file.maxt, lonRange = c(223,302), latRange = c(17,56), timeRange = c(0,0))
+mint.df <- getCDF.data(filePath = file.mint, lonRange = c(223,302), latRange = c(17,56), timeRange = c(0,0))
+prec.df <- getCDF.data(filePath = file.prec, lonRange = c(223,302), latRange = c(17,56), timeRange = c(0,0))
+```
+
+
+## Examining the Maximum Temps.
+
+Let's begin by modeling the maximum temperature first. (I anticipate that the max temp and min temp will be proxies for one another, and for future analysis the magnitude of the their difference may be important for applications). A model will be of the form:
+
+\[
+\mbox{MAXT} = \beta_0 + f(\mbox{latitude}) + f(\mbox{longitude}) + f(\mbox{latitude}*\mbox{longitude}) + \epsilon
+\]
+
+Now, this is fit using the `gam` function from `mgcv`:
+
+```{r}
+temp.mod <- gam(MAXT ~ s(lon) + s(lat) + te(lon,lat), data = maxt.df)
+summary(temp.mod)
+```
+
+Using the default parameters, we are able to explain 97% of the deviance in the data -almost a perfect fit!
+
+The model can be tuned by changing the spline basis and number of knots (at the cost of more computation time):
+
+```{r}
+temp.modalt <- gam(MAXT ~ s(lon, bs = "cr", k = 15) + 
+                     s(lat, bs="cr", k = 15) + 
+                     te(lon,lat, bs = "cr", k = 15),
+                   data = maxt.df)
+summary(temp.modalt)
+```
+
+Now we explain about 99.5% of the deviance using only the geographic coordinates. This enables us to interpolate between the observations. We can also plot the smooths as a function of the relevant predictors in order to understand how the functions behave according to the predictors. Let's look at the model using the default thin-plate spline smooth and default parameters:
+
+```{r}
+draw(temp.mod)
+```
+
+Residual diagnostics can be performed:
+
+```{r}
+appraise(temp.mod)
+```
+
+Plotting the slightly more complicated cubic spline basis gives:
+
+```{r}
+draw(temp.modalt)
+```
+
+```{r}
+appraise(temp.modalt)
+```
+
+The QQ-plot is slightly worse tha previously, but the other residuals diagnostics are slightly better. There may be some overdispersion in the data that ought to be accounted for. The two models can also be compared by means of AIC:
+
+```{r}
+AIC(temp.mod,temp.modalt)
+```
+
+
+Both fits yield slightly heavy tailed residuals (the cubic spline basis model more so), this can be accounted for by a transformation, or leveraging the "generalized" aspect of a GAM and fitting a different family (other than Gaussian). As with any modeling procedure, there is always a variance-bias trade off that ought to be considered.
+
+So now we can predict:
+
+```{r}
+maxt.df = maxt.df %>% mutate(preds = predict(temp.modalt, maxt.df[c("lon", "lat")]))
+head(maxt.df)
+```
+
+And now at an arbitrary location. Let's try the coordinates of Ft. Collins: -105.08584 W 40.57639 N, which are in the lat/lon convention for the data are: (254.9142, 40.5764)
+
+```{r}
+predict(temp.modalt, data.frame(lon = 254.9142, lat = 40.5764))
+```
+
+
+## Examining Precipitation
+
+Let's examine precipitation as well, using the same form of the model as before. (As we shall see, the Gaussian family will not be adequate to model the data.)
+
+```{r}
+prec.mod <- gam(PREC ~ s(lon) + s(lat) + te(lon,lat), data = prec.df)
+summary(prec.mod)
+```
+
+This is not a great model based on the deviance explained and adjusted $R^2$, so let's go to the straight to the residual diagnostics:
+
+```{r}
+appraise(prec.mod)
+```
+
+It seems like we are not using the appropriate distribution family, since the residuals are so right skewed, and there is bizarre behavior in all of these diagnostic plots. A generic distribution that allows for skewed data that includes zero's is the Tweedie distribution (perhaps look in the literature for modeling precipitation), so let's try this:
+
+```{r}
+prec.mod <- gam(PREC ~ s(lon) + s(lat) + te(lon,lat),
+                family = "tw",
+                data = prec.df)
+summary(prec.mod)
+```
+
+The deviance explained has increased to about 72% (however we have a somewhat small adjusted $R^2$), and the residual diagnostics looks better:
+
+```{r}
+appraise(prec.mod)
+```
+
+And just as before we can tune the model using a different spline basis, and change the number of knots etc... Let's examine the smooths as well:
+
+```{r}
+draw(prec.mod)
+```
+
+In using Phong's shiny app to look at the precipitation for this date, we see a high amount of rain over Appalacia, which is described by  the interaction plot above (i.e. the interaction is modeling most of the behavior).
+
+Let's try a different smooth basis (in this case we'll try p-splines):
+
+```{r}
+prec.modalt <- gam(PREC ~ s(lon, bs = "ps") + s(lat, bs = "ps") + te(lon,lat, bs = "ps"),
+                family = "tw",
+                data = prec.df)
+summary(prec.modalt)
+```
+
+We have an increase in the deviance explained and the adjusted $R^2$. The plots of these smooths look like:
+
+```{r}
+draw(prec.modalt)
+```
+
+And the corresponding residual diagnostics look like:
+
+```{r}
+appraise(prec.modalt)
+```
+
+The diagnostic plots are overall more satisfactory than previously. Of course, the parameters could be further tuned to improve the model. 
+
+## Examining Time-Dependence (NEEDS MORE WORK)
+
+Thus far, only the first time slice of data has been considered. It may be germane to investigate how the temperatures or precipitation vary with latitude and longitude over time, e.g. does the summer high temperature increase over time more rapidly for higher latitudes than lower latitudes? This observation may guide us to a specific ecological question about forestry or bird migration etc... I've noticed that its hard to unearth any observations about structure in the data, so my thought is that by creating some additive models we can see if there is any sturcure, that we may be missing by eye. 
+
+Let's grab all the maximum temp data and convert the time to a usable date:
+
+```{r}
+allMaxt.df <- getCDF.data(filePath = file.maxt, lonRange = c(223,302), latRange = c(17,56), timeRange = c(0,14245))
+```
+
+Let's create a table of the `time` as recorded in the netCDF file and the actual date, and then select the first 7 days (week) in June:
+
+```{r}
+## Just grab time series over Ft Collins to grab time indices
+
+times.ts <- getCDF.data(filePath = file.maxt, lonRange = c(255,255), latRange = c(40.5,40.5), timeRange = c(0,14245)) %>% select(time)
+
+times.ts <- times.ts %>% mutate(date = ParseNetCDFTime(file.maxt, times.ts)) %>%
+  mutate(year = lubridate::year(date), 
+         month = lubridate::month(date), 
+         day = lubridate::day(date)) %>%
+  filter(month == 6, day %in% c(1:7) )
+
+              
+times.ts
+```
+
+Now we have the appropriate time indices to filter by in the full data-frame, and let's summarize the MAXT for the average temperature in that week:
+
+```{r}
+allMaxt.df <- allMaxt.df %>% filter(time %in% times.ts$time) %>%
+  group_by(time, lon, lat) %>%
+  summarize(meanMAXT = mean(MAXT))
+head(allMaxt.df)
+```
+
+We also may want to rescale the time variable:
+
+```{r}
+allMaxt.df$time.sc <- scale(allMaxt.df$time, center = F)*19
+head(allMaxt.df)
+tail(allMaxt.df)
+```
+
+Now lets try fitting a model to see what happens. Note: these models and plots take a little bit of time to run. First lets just fit the main effects:
+
+```{r}
+time.modMain <- bam(meanMAXT ~ s(lon) + s(lat) + s(time.sc), data = allMaxt.df)
+summary(time.modMain)
+```
+
+The effective degrees of freedom are close to the reference, so we may want to increase the number of knots etc... Let's look a the smooths:
+
+```{r}
+draw(time.modMain)
+```
+
+We can see the effect of longitude is greatest in the middle of the continent, and as latitude increases, the effect of latitude on temperature causes a decrease. The effect of time has a oscillation, but generally trends upward.
+
+Let's explore the hypothesis that the change in temperature is different for higher and lower latitudes by including an interaction, and boosting the number of knots (the effect of latitude is effectively linear):
+
+```{r}
+time.modLatInt<- bam(meanMAXT ~ s(lon, k = 15) + lat + 
+                       s(time.sc, k = 15) + 
+                       te(time.sc, lat, k = 12), data = allMaxt.df)
+summary(time.modLatInt)
+```
+
+```{r}
+draw(time.modLatInt)
+```
+
+We can see in the interaction of latitude with time that in the last quarter of the century, it was much hotter in the north than the south. In all of these cases the models do need to be refined and examined, but it takes awhile to plot and fit these. A next step might be to focus on a region of CONUS of interest and see how the climate varies in that location. It also may be useful to rescale all variables for fitting an interpretation since we get some bizarre scales above. 
+
+Let's try slicing along a fixed longitude to examine the effect of latitude and time on the summer maximum temperature. This will also help to speed up computations and plotting, so the data can be explored a little more easily. Let's select the longitude for which Ft. Collins is located and slice CONUS along this line vertically:
+
+```{r}
+MAXT.slice <- allMaxt.df %>% filter(lon == 255)
+head(MAXT.slice)
+```
+
+A quick plot in base R of the relavent data yields:
+
+```{r}
+par(mfrow = c(1,2))
+plot(meanMAXT ~ lat, data = MAXT.slice)
+plot(meanMAXT ~ time.sc, data = MAXT.slice)
+```
+
+What is rather interesting is that as the latitude increases the variability in the maximum temperature increases from year to year, but is overall slightly lower than for lower latitudes.. This may be an important insight. I also may explore this further and see if this variability can be characterized and/or if we see this across other longitude slices. 
+
+Now, lets examine a model with time and latitude as main effects and the interaction and see if there is any apparent additive structure in the data:
+
+```{r}
+mod.MAXTslice <- gam(meanMAXT ~ s(lat, k = 15) + s(time.sc, k = 15) + te(time.sc,lat, k = 10), data = MAXT.slice)
+summary(mod.MAXTslice)
+```
+
+```{r}
+draw(mod.MAXTslice)
+```
+
+We can see a slight upward gradient in the interaction plot as latitude increases, when we hold the effect of latitude and time fixed, so it may be worth exploring the notion that the difference in temperature between higher and lower latitudes changes over time and may have an effect on some aspect of ecology. 
+
+

@@ -1,0 +1,134 @@
+---
+title: "EDA Notebook"
+output: html_notebook
+---
+
+In this notebook, I've place a `load_netcdf.R` script, which contains functions for getting the data from the netCDF files provided. Ultimately these functions would be made robust, so that they can be used for all of the netCDF files we may encounter on this project.
+
+First, we load in the relevant libraries for exploring netCDF files, and for analysis/plotting:
+
+```{r, warning = F}
+library(tidyr)
+library(RNetCDF)
+library(tidync)
+library(ncmeta)
+library(dplyr)
+library(ggplot2)
+library(tools)
+library(sf)
+library(maps)
+library(patchwork)
+```
+
+Set the file paths to the data-sets and source the script using the `source()` function, containing the custom functions written by Phong:
+
+```{r}
+file.maxt <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/MAXT.nc" # Maximum temperature
+file.mint <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/MINT.nc" # Minimum temperature
+file.prec <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/PREC.nc" # Precipitation
+
+source('C:/Users/jddru/Desktop/ASAENVR/notebook_template/load_netcdf.R')
+```
+
+
+Apply the `getCDF.data()` function from the script to obtain data-frames: 
+
+```{r}
+maxt.df <- getCDF.data(filePath = file.maxt, lonRange = c(223,302), latRange = c(17,56), timeRange = c(0,0))
+mint.df <- getCDF.data(filePath = file.mint, lonRange = c(223,302), latRange = c(17,56), timeRange = c(0,0))
+prec.df <- getCDF.data(filePath = file.prec, lonRange = c(223,302), latRange = c(17,56), timeRange = c(0,0))
+```
+
+
+Now, we can replicate Phong's plot:
+
+```{r}
+dataset <- full_join(maxt.df, mint.df) %>% full_join(prec.df) %>% select(MINT, MAXT, PREC, lon, lat, time) 
+
+#### Retrieve world map and convert to an sf object and create centroid
+#### plot points for each state to help with labeling. Finally, convert state to
+#### proper case.
+map <- st_as_sf(map("world", plot = FALSE, fill = TRUE))
+map <- cbind(map, st_coordinates(st_centroid(map)))
+map$ID <- toTitleCase(as.vector(map$ID))
+map$ID <- ifelse(map$ID == "USA", "", map$ID)
+
+#### Retrieve US map plot points 
+us.states <- map_data("state")
+us.states <- st_as_sf(map("state", plot = FALSE, fill = TRUE))
+us.states <- cbind(us.states, st_coordinates(st_centroid(us.states)))
+us.states$ID <- toTitleCase(as.vector(us.states$ID))
+
+#### County boundaries. The st_area function calculates are within the polygon.
+#### This function might be useful later down the road.
+counties <- st_as_sf(map("county", plot = FALSE, fill = TRUE))
+counties$area <- as.numeric(st_area(counties))
+
+#### Plot maximum temperature slice over US map with counties
+ggplot() +
+  # Plot area of interest from ERA-Interim dataset 
+  geom_raster(data = dataset, aes(x = lon - 360, y = lat, fill = MAXT)) +
+  # Reds color pallete for heat map
+  scale_fill_distiller(palette = "Reds") +
+  # Draws world map
+  geom_sf(data = map, fill = NA) +
+  # Draws US states map
+  geom_sf(data = us.states, fill = NA) +
+  # Add US state names
+  geom_text(data = us.states, aes(X, Y, label = ID), size = 2) +
+  # Add country names
+  geom_text(data = map, aes(X, Y, label = ID), size = 2) + 
+  theme_bw() +
+  
+  #NB: needed to change the way the bounds are set for plotting:
+  
+  coord_sf(xlim = c(min(maxt.df$lon) - 360, 
+                    max(maxt.df$lon) - 360), 
+           ylim = c(min(maxt.df$lat), 
+                    max(maxt.df$lat)), 
+           expand = FALSE) 
+```
+
+Let's explore some time series at different locations, such as Ft. Collins, which is located at 40.58N, 105.08W. The closest coordinate in the data is: (255, 40.5) as a lon/lat point. 
+
+```{r}
+maxt.ts <- getCDF.data(filePath = file.maxt, lonRange = c(255,255), latRange = c(40.5,40.5), timeRange = c(0,14245))
+mint.ts <- getCDF.data(filePath = file.mint, lonRange = c(255,255), latRange = c(40.5,40.5), timeRange = c(0,14245))
+prec.ts <- getCDF.data(filePath = file.prec, lonRange = c(255,255), latRange = c(40.5,40.5), timeRange = c(0,14245))
+```
+
+Now let's join into a single data-frame and get a usable date using Phong's `ParseNetCDFTime()` function:
+
+```{r}
+data.ts <- full_join(maxt.ts, mint.ts) %>% full_join(prec.ts) %>% select(MINT, MAXT, PREC, lon, lat, time)
+data.ts <- data.ts %>% mutate(date = ParseNetCDFTime(file.maxt, data.ts))
+head(data.ts)
+```
+
+Now we can plot the maximum temp, minimum temp, in the area over FT. Collins:
+
+```{r, warning = F}
+tempMAX.plot <- ggplot(data.ts, aes(x = date, y = MAXT)) +
+              geom_line(color = "tomato")
+
+tempMIN.plot <- ggplot(data.ts, aes(x = date, y = MINT)) +
+              geom_line(color = "lightblue")
+  
+prec.plot <- ggplot(data.ts, aes(x = date, y = PREC)) +
+              geom_line(color = "darkblue")
+
+tempMAX.plot/tempMIN.plot/prec.plot
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
