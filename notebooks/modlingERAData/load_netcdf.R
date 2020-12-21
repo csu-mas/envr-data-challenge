@@ -4,7 +4,7 @@
 #### -Parsing the time from the netCDF file to a useful date/time object: ParseNetCDFTime()
 
 
-getCDF.data <- function(filePath, lonRange, latRange, timeRange){
+getCDF.data <- function(filePath, lonRange, latRange, timeRange, asCube = FALSE){
   
   ## Require packages
   
@@ -21,14 +21,19 @@ getCDF.data <- function(filePath, lonRange, latRange, timeRange){
   
   ## Lazy load the CDF file
   
-  df.slc <- tidync(filePath)
+  data <- tidync(filePath)
   
   ## Slice the data based on input
   
-  df.slc %>% hyper_filter(lon = between(lon, q["lon", "min"], q["lon", "max"]), 
-                              lat = between(lat, q["lat", "min"], q["lat", "max"]), 
-                              time = between(time, q["tim", "min"], q["tim", "max"])) %>% hyper_tibble()
+  data <- data %>% hyper_filter(lon = between(lon, q["lon", "min"], q["lon", "max"]), 
+                                lat = between(lat, q["lat", "min"], q["lat", "max"]), 
+                                time = between(time, q["tim", "min"], q["tim", "max"])) 
 
+  if(asCube) {
+    data %>% hyper_tbl_cube() 
+  } else {
+    data %>% hyper_tibble()
+  }
 }
 
 
@@ -47,4 +52,43 @@ ParseNetCDFTime <- function(variableMetadata, variableData) {
               time.parts[, "minute"],
               time.parts[, "second"],
               tz = "UTC")
+}
+
+getTimeRange <- function(year, origin) {
+  s <- as.Date(paste(year[1], 01, 01, sep = "-"))
+  e <- as.Date(paste(year[2], 12, 31, sep = "-"))
+  
+  start <- as.integer(difftime(s, origin, units = "days"))
+  end <- start + as.integer(difftime(e, s, units = "days"))
+  
+  c(start, end)
+}
+
+conus.map <- function() {
+  library(maps)
+  library(sf)
+  library(tools)
+  
+  map <- st_as_sf(map("world", plot = FALSE, fill = TRUE))
+  map <- cbind(map, st_coordinates(st_centroid(map)))
+  map$ID <- toTitleCase(as.vector(map$ID))
+  map$ID <- ifelse(map$ID == "USA", "", map$ID)
+  
+  us.states <- map_data("state")
+  us.states <- st_as_sf(map("state", plot = FALSE, fill = TRUE))
+  us.states <- cbind(us.states, st_coordinates(st_centroid(us.states)))
+  us.states$ID <- toTitleCase(as.vector(us.states$ID))
+  
+  world.map <- st_as_sf(map("world", plot = FALSE, fill = TRUE))
+  world.map <- cbind(map, st_coordinates(st_centroid(map)))
+  
+  base.map <- c(geom_sf(data = world.map, fill = NA),
+                geom_text(data = map, aes(X, Y, label = ID), size = 2),
+                geom_sf(data = us.states, fill = NA),
+                geom_text(data = us.states, aes(X, Y, label = ID), size = 2),
+                coord_sf(xlim = c(-136.5, -58.5),
+                         ylim = c(17.25, 55.5),
+                         expand = FALSE))
+  
+  base.map
 }
