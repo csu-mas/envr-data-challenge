@@ -1,0 +1,229 @@
+---
+title: "Modeling ERA Data (continuation)"
+output:
+  html_notebook
+---
+
+JD has done some great work and I will see if I can continue in his direction. As JD pointed out in his initial analysis that time-dependence needs to be examine. I will explore the `PREC` variable and perform some exploratory analysis with the goal in mind to reduce the overall dimensions. My thought here is to simply look for observations that standout - outliers. This will then allow us to focus our analysis on a particuliar region of interest (instead of picking an arbitrary region at random), will simplify our analysis, and save our computers from computational meltdown! 
+
+Before I start on that, I have to modify the initial function I wrote `getCDF.data`. Although it works in its current state, it is not particuliarly efficient and I am tired of waiting for my computer to crunch numbers! The current version of `getCDF.data` has one additional parameter, `asCube` which is a logical. The additional parameter allows the function to return the data retrieved as either a data.frame or an array. The data.frame works the same as in the first function version. The `asCube` array is able to perform calculations at lighting speeds and is the solution for us to be able to work with this hugh dataset. 
+
+I will demonstrate the function in action below.
+
+```{r message=FALSE, warning=FALSE}
+file.maxt <- "../../data/era-interim/MAXT.nc" # Maximum temperature
+
+source("load_netcdf.R")
+
+maxt.cube <- getCDF.data(filePath = file.maxt,
+                       lonRange = c(223.5,301.5),                             
+                       latRange = c(17.25,55.5),                             
+                       timeRange = c(0, 14244),
+                       asCube = TRUE)
+
+maxt.by.year <- array(dim = c(105, 52, 39))
+
+for (i in 1979:2017) {
+  ## Helper function to get "days since" range for a particuliar year 
+  ## and added 1 to the range for indexing purposes. 
+  range <- getTimeRange(c(i, i), "1979-01-01") + 1
+  ## Stores yearly average of MAXT in array. 
+  ## NOTE: The second argument for the apply function takes on several variations as follows:
+  ## 1 - apply function rowwise (lon)
+  ## 2 - apply function columnwise (lat)
+  ## 1:2 - apply function both rowwise and columnwise (lon, lat)
+  maxt.by.year[, , i - 1979 + 1] <- apply(maxt.cube$mets$MAXT[, , range[1]:range[2]], 1:2, mean)
+}
+
+## Add dimension names for readability
+dimnames(maxt.by.year) <- list(maxt.cube$dims$lon,
+                               maxt.cube$dims$lat,
+                               1979:2017)
+
+## Retrieve mean MAXT for 1988
+maxt.by.year[, , "1988"] %>% head()
+
+## Since memory resources are precious, I suggest loading only one data 
+## cube at a time and unloading it once done with. Can always reload later.
+rm(maxt.cube)
+## Trigger garbage collection to retrieve unused memory
+gc()
+```
+
+As you can see the `getCDF.data` function call remains essentially the same. The difference is how we perform our calculations. The flexibility is apparent. For example, what if we wanted to know the cumulative precipation for a years worth?
+
+```{r message=FALSE, warning=FALSE}
+file.prec <- "../../data/era-interim/PREC.nc" # Precipitation
+
+prec.cube <- getCDF.data(filePath = file.prec,
+                         lonRange = c(223.5,301.5),                             
+                         latRange = c(17.25,55.5),                             
+                         timeRange = c(0, 14244),
+                         asCube = TRUE)
+
+prec.by.year <- array(dim = c(105, 52, 39))
+
+for (i in 1979:2017) {
+  range <- getTimeRange(c(i, i), "1979-01-01") + 1
+  prec.by.year[, , i - 1979 + 1] <- apply(prec.cube$mets$PREC[, , range[1]:range[2]], 1:2, sum)
+}
+
+## Add dimension names for readability
+dimnames(prec.by.year) <- list(prec.cube$dims$lon,
+                               prec.cube$dims$lat,
+                               1979:2017)
+
+## Retrieve total PREC for 1988
+prec.by.year[, , "1988"] %>% head()
+
+rm(prec.cube); gc()
+```
+
+Lets plot a raster map for 1988 for average maximum temperature and total precipitation.
+
+```{r fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+
+## Convert arrays into long form for plotting
+prec.long <- prec.by.year %>% melt() %>% rename(lon = Var1, lat = Var2, year = Var3, total.prec = value)  
+maxt.long <- maxt.by.year %>% melt() %>% rename(lon = Var1, lat = Var2, year = Var3, mean.maxt = value)
+
+ggplot() +
+  geom_raster(data = maxt.long %>% filter(year == 1988),
+              aes(x=lon-360,y=lat,fill=mean.maxt), interpolate = TRUE) +
+  geom_contour(data = prec.long %>% filter(year == 1988), 
+               aes(x=lon-360,y=lat,z=total.prec), color="white", alpha = 0.33) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       fill = "Max Temp.") +
+  conus.map() +
+  theme_minimal()
+```
+
+Next, I will try to reduce the dimensions of our dataset by fitting a time series model at each spatial location (lon, lat) from 1979 to 2017 of total annual precipatation and search for irregularities in the data by way of outliers. I will standardize the residuals and compare the entire spatial-temporal data for outliers. This will identify regions of anomalies sliced by time (years).
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(forecast)
+
+source("load_netcdf.R")
+
+file.prec <- "../../data/era-interim/PREC.nc" # Precipitation
+
+prec.cube <- getCDF.data(filePath = file.prec,
+                         lonRange = c(223.5,301.5),                             
+                         latRange = c(17.25,55.5),                             
+                         timeRange = c(0, 14244),
+                         asCube = TRUE)
+
+prec.annual <- array(dim = c(105, 52, 39))
+
+for (year in 1979:2017) {
+  ## Retrieve time range for year requested. The "+ 1" at the end is to shift the time index
+  ## by one to R's index-based implementation
+  range <- getTimeRange(c(year, year), "1979-01-01") + 1
+  ## Store annual precipitation data
+  prec.annual[, , year - 1979 + 1] <- apply(prec.cube$mets$PREC[, , range[1]:range[2]], 1:2, sum)
+}
+
+prec.ts <- array(dim = c(105, 52, 39))
+
+## Add dimension names for readability
+dimnames(prec.ts) <- list(prec.cube$dims$lon,
+                          prec.cube$dims$lat,
+                          1979:2017)
+
+rm(prec.cube)
+gc()
+
+## This next block of code takes some time to execute
+for (lon in 1:105) {
+  for (lat in 1:52) {
+    ## Format data into time-series
+    ts.data <- ts(prec.annual[lon, lat, ], start = c(1979, 1))
+    ## Model data as an ARIMA model. The auto.arima will automatically
+    ## select the p, d, q parameters.
+    ar.model <- auto.arima(ts.data)
+    ## Retrieve model residuals and store in array
+    prec.ts[lon, lat, ] <- as.vector(ar.model$residuals)
+  }
+}
+
+## Standard deviation for spatial points across time
+prec.ts.sd <- apply(prec.ts, 1:2, sd)
+
+## Rescale all residuals
+for (lon in 1:105) {
+  for (lat in 1:52) {
+    prec.ts[lon, lat, ] <- prec.ts[lon, lat, ] / prec.ts.sd[lon, lat]
+  }
+}
+
+prec.ts.sd.long <- prec.ts %>% melt() %>% rename(lon = Var1, lat = Var2, time = Var3, sd.residual = value)
+
+## Interested in residuals that are greater than 3 sd of the spatial-temporal data
+outliers <- prec.ts.sd.long %>% filter(abs(sd.residual) > 3)
+
+outliers %>% head()
+```
+
+The `outliers` data.frame contains the spatial (lon, lat) and temporal (time) location of the anomaly, in this case the unusual amount of annual precipitation. Keep in mind that positive `sd.residual` indicates high annual precipitation and negative `sd.residual` indicates low annual precipitation.
+
+In the next block of code I will employ hierarchical cluster analysis to simply group our anomalies into similiar clusters. This again continues with the goal of subsetting the dataset and focusing on potential areas of interest.
+
+```{r fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(tidyverse)
+
+# Calculate distances of all outliers
+map.dist <- dist(outliers[, c('lon', 'lat')], method = "euclidean")
+
+## Calculates similiarities using sums of squares distance from each point to the mean
+## of the merged clusters
+hc <- hclust(map.dist, method = "ward.D2")
+
+## Group data based on an arbitrary number of clusters. Less clusters mean larger regions of data
+## and more clusters mean smaller more focused regions of data
+fit <- cutree(hc, k = 25)
+
+outliers$cluster <- fit
+```
+
+Lets visualize regions of unusual levels of annual precipitation
+
+```{r fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+ggplot(outliers) +
+  geom_point(data = outliers, aes(x = lon - 360, y = lat, color = factor(cluster))) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       color = "Cluster",
+       fill = "Standardized Residuals",
+       title = "Cluster(s) of Anomalies") +
+  conus.map() +
+  theme_minimal()
+```
+
+Lets view 2004 in detail.
+
+``` {r fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+ggplot(outliers %>% filter(time == 2004)) +
+  geom_point(aes(x = lon - 360, y = lat, color = sd.residual, pch = factor(cluster)), cex = 3) +
+  scale_color_distiller(palette = "RdYlBu") +
+  labs(x = "Longitude",
+       y = "Latitude",
+       pch = "Cluster",
+       color = "Standardized Residuals",
+       title = "Cluster(s) of Anomalies - 2004") +
+  conus.map() +
+  theme_minimal()
+```
+
+In the 2004 anomaly map above, I found it interesting that the cluster over Cuba, Bahamas and Turks and Cacos, had lower than normal annual precipitation. As we remember this was the year of the historical Hurricane Katrina that hit Louisiana. Was one of the contributing reasons that Louisiana was hit hard with high levels of precipitation was because Hurricane Katrina did not dump "normal" levels of precipitation over Cuba, Bahamas, and Turks and Cacos? 
+
+***
+
+The above analysis of the `PREC` variable could be easily swapped out for `MAXT` or `MINT` and reanalyzed. I hope the above analysis will help guide us moving forward with targeted analysis and additional data collection efforts. 
