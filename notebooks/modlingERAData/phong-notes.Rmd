@@ -5,7 +5,7 @@ output: html_notebook
 
 ### Goal
 
-JD has done some great work and I will see if I can continue in his direction. As JD pointed out in his initial analysis that time-dependence needs to be examine. I will explore the `PREC` variable and perform some exploratory analysis with the goal in mind to reduce the overall dimensions. My thought here is to simply look for observations that standout - outliers. This will then allow us to focus our analysis on a particuliar region of interest (instead of picking an arbitrary region at random), while simplifying our analysis, and saving our computers from a computational meltdown! 
+JD has done some great work and I will see if I can continue in his direction. As JD pointed out in his initial analysis that time-dependence needs to be examined. I will explore the `PREC` variable and perform some exploratory analysis with the goal in mind to reduce the overall dimensions. My thought here is to simply look for observations that standout - outliers. This will then allow us to focus our analysis on a particuliar region of interest (instead of picking an arbitrary region at random), while simplifying our analysis, and saving our computers from a computational meltdown! 
 
 ***
 
@@ -22,10 +22,10 @@ source("load_netcdf.R")
 source("../../r/helpers.R")
 
 maxt.cube <- getCDF.data(filePath = file.maxt,
-                       lonRange = c(223.5,301.5),                             
-                       latRange = c(17.25,55.5),                             
-                       timeRange = c(0, 14244),
-                       asCube = TRUE)
+                         lonRange = c(223.5,301.5),                             
+                         latRange = c(17.25,55.5),                             
+                         timeRange = c(0, 14244),
+                         asCube = TRUE)
 
 maxt.by.year <- array(dim = c(105, 52, 39))
 
@@ -125,6 +125,8 @@ prec.by.month[1:6, 1:6 , (1988 - 1979) * 12 + 5] %>% head()
 rm(prec.cube); gc()
 ```
 
+\newpage
+
 Lets plot a raster map of 1988 for average maximum temperature and total precipitation.
 
 ```{r message=FALSE, warning=FALSE}
@@ -202,7 +204,10 @@ for (lon in 1:105) {
   }
 }
 
-prec.month.ts.sd.long <- prec.month.ts %>% melt() %>% rename(lon = Var1, lat = Var2, time = Var3, sd.residual = value)
+prec.month.ts.sd.long <- prec.month.ts %>% melt() %>% rename(lon = Var1, 
+                                                             lat = Var2, 
+                                                             time = Var3, 
+                                                             sd.residual = value)
 
 ## Interested in residuals that are greater than 3 sd of the spatial-temporal data
 outliers <- prec.month.ts.sd.long %>% filter(abs(sd.residual) > 3)
@@ -240,7 +245,9 @@ centers <- cluster$centers %>% as.data.frame()
 ggplot(data = outliers.2012, aes(x = lon - 360, y = lat)) +
   stat_density2d(aes(fill = factor(cluster), group = factor(cluster)), geom = "polygon") +
   geom_point(aes(color = sd.residual), size = 4) +
-  geom_label(data = centers, aes(x = lon - 360, y = lat, label = 1:5), size = 6, fontface="bold") +
+  geom_label(data = centers, 
+             aes(x = lon - 360, y = lat, label = 1:5), 
+             size = 6) +
   scale_color_distiller(palette = "Spectral") +
   labs(fill = "Cluster",
        color = "Standardized Residuals",
@@ -264,8 +271,10 @@ ggplot(data = outliers.2012, aes(x = lon - 360, y = lat)) +
 ## October 2012
 ggplot(data = outliers.2012 %>% filter(month == 10), aes(x = lon - 360, y = lat)) +
   geom_tile(aes(fill = sd.residual), size = 4) +
-  geom_label(data = centers, aes(x = lon - 360, y = lat, label = 1:5), size = 6, fontface="bold") +
-  scale_fill_distiller(palette = "Spectral") +
+  geom_label(data = centers, 
+             aes(x = lon - 360, y = lat, label = 1:5), 
+             size = 6) +
+  scale_fill_distiller(palette = "Reds") +
   conus.map() +
   labs(x = "Longitude",
        y = "Latitude",
@@ -303,12 +312,14 @@ plot.summary <-
   conus.map() +
   theme_minimal()
 
-plot.summary
-
 ggsave("anomalies-plot.jpg", plot.summary, height = 20, width = 30, units = "in")
 ```
 
-The map is hard to see when outputed in this document, so I saved is as anomalies-plot.jpg in this file directory.
+![anomalies-plot.jpg](anomalies-plot.jpg)
+
+***
+
+The map is hard to see when outputed in this document, so I saved it as anomalies-plot.jpg in this file directory.
 
 How I interpret the map is as follows: the numbers you see is a simple count of anomalies in the 39 years at that particuliar spatial point and the different sizes of the numbers just correspond to the count. It helps us see larger numbers over smaller numbers. The colors in the raster map can be interpreted as the overall strength of the anomalies. The "reds" tells us that when an anomaly occurs, the anomaly releases unusually high amounts of precipitation for that location. The "blues" tell us the opposite, indicating the anomalies over these locations releases unusually low amounts of precipitation. 
 
@@ -335,6 +346,18 @@ ggplot(data = outliers.summary, aes(x = lon - 360, y = lat)) +
 ```
 
 At last, we are guided by the bright areas on the map as potential areas of interest for further research. For example, the border of southern California, Nevada, Arizona, and Baja Mexico lights up like a beacon. Another region is central Missouri or most of Montana. There are numerous other locations for us to consider. The black spots on the map are voids (no detected anomaly).
+
+Afterwards, I took the "Spatial Anomaly Strength by Rank (1979-2017)" plot above and post processed the image by adjusting the contrast and brightness levels to bring the bright spots out. I saved two processed images in this file directory (anomaly-map-processed-1 and anomaly-map-processed-2)
+
+\newpage
+
+##### Processed Images
+
+![anomaly-map-processed-1.jpg](anomaly-map-processed-1.jpg)
+
+***
+
+![anomaly-map-processed-2.jpg](anomaly-map-processed-2.jpg)
 
 If we wanted to, we could seperate the `outliers.summary` by unusually low and unusually high precipitation, re-rank the anomalies, and replot the heat map.
 
