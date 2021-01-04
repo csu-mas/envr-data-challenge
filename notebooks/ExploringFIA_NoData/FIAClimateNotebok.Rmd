@@ -1,0 +1,379 @@
+---
+title: "Modeling Climate and FIA Data"
+output: html_notebook
+---
+
+## Introduction
+
+Let's pick up where we left of in the `FIANotebook.Rmd`, namely at the wrangling/modeling stage. The objective in this notebook will be to take the different estimates, and for a given plot coordinate combine that with smoothed climate data (via a GAM/spline) aggregated across each year. The first step will be to form the FIA data into a tidy format then combine the climate data and see if any patterns emerge.
+
+The overall approach will be be as follows:
+
+  * Obtain forest ecology estimates from the `rFIA` package, and put these into a tidy array.
+ 
+  * Get the ERA-Interim data over the state of Colorado. Determine the average maximum temperature, minimum temperature, and precipitation for the years contained in the forest estimates data. Smooth the climate data using a GAM to predict at the plot locations in the forest data.
+  
+  * Join the predicted climate variables with the forest variables for analysis.
+  
+  * Apply unsupervised learning methods (clustering and PCA) to examine any pattern or structure.
+
+Here is a cell for the necessary libraries:
+```{r, warning = FALSE, message = FALSE}
+library(rFIA)
+library(dplyr)
+library(ggplot2)
+library(rpart)
+library(mgcv)
+library(tidyr)
+library(RNetCDF)
+library(tidync)
+library(ncmeta)
+library(dplyr)
+library(ggplot2)
+library(tools)
+library(sf)
+library(maps)
+library(patchwork)
+```
+
+## Wrangling the FIA Data
+
+Let's look a the forests of Colorado which we should already have, we can change this as necessary for different states or for a combination of states
+
+```{r}
+## Uncomment to download data
+# COforest <- getFIA(states = "CO", dir = getwd())
+
+## Uncomment to read in existing data
+COforest <- readFIA("C:/Users/jddru/Desktop/ASAENVR/ExploringFIA")
+```
+
+
+Now let's get the various estimates for the plots. Previously we observed some trends in the data. It may be germane to investigate some modeling (e.g. unsupervised learning methods) in order to understand the overall structure of the data. This will also enable us to include the climate data and observe and associations, should they exist, between the forest data and the climate data. In order to proceed, I'll make use of the estimate functions explored previously. We can obtain estimates at the plot level in order to examine any spatial variation. We also may want to combine tree level information in the future.
+
+Let's subset some of these tables. For the `BIOMASS` table lets only consider the `NETVOL_ACRE` (i.e. the total biomass per acre), and from the `VITALRATES` lets only consider the `NETVOL_GROW`. For the others, we can drop the `YEAR` and `PLOT_STATUS` since they will be linked to the `TPA` abundance table by the `PLT_CN` id number. (This takes a moment to run.)
+
+```{r, warning = FALSE}
+## Abundance
+tpaCO_plot <- tpa(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(PLT_CN, YEAR, PLOT_STATUS_CD, TPA, BAA, nStems)
+
+## Biomass
+bioCO_plot <- biomass(COforest, grpBy = PLOT, byPlot = TRUE, treeType = 'all') %>%
+  select(PLT_CN, YEAR, NETVOL_ACRE)
+
+## Mortality
+mortCO_plot <- growMort(COforest, byPlot = TRUE, treeType = 'all') %>%
+  select(PLT_CN, YEAR, MORT_TPA)
+
+## Carbon
+carbCO_plot <- carbon(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(-c(pltID, PLOT, POOL)) %>% 
+  group_by(PLT_CN, YEAR) %>%
+  summarise(CARB_TOT = sum(CARB_ACRE))
+
+## seedling abundance
+seedCO_plot <- seedling(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(PLT_CN, YEAR, TPA) %>%
+  rename(seedTPA = TPA)
+
+## vital information
+vitalCO_plot <- vitalRates(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(PLT_CN, YEAR, NETVOL_GROW)
+```
+
+Now, let's begin to join the tables together:
+
+```{r}
+FIACO_data <- inner_join(tpaCO_plot, bioCO_plot, by = c('PLT_CN' = 'PLT_CN', 'YEAR' = 'YEAR')) %>%
+  inner_join(., mortCO_plot, by = c('PLT_CN' = 'PLT_CN', 'YEAR' = 'YEAR')) %>%
+  inner_join(., carbCO_plot, by = c('PLT_CN' = 'PLT_CN', 'YEAR' = 'YEAR')) %>%
+  inner_join(., seedCO_plot, by = c('PLT_CN' = 'PLT_CN', 'YEAR' = 'YEAR')) %>%
+  inner_join(., vitalCO_plot, by = c('PLT_CN' = 'PLT_CN', 'YEAR' = 'YEAR'))
+
+head(FIACO_data)
+```
+
+There is one last join we need to perform, and that with the `PLOT` table which as the coordinates and elevation of each of the plots. Let's grab the plot information:
+
+```{r}
+CO.PLOT <- COforest$PLOT
+CO.PLOT <- CO.PLOT %>% select(
+  ## Grab ID and location information..
+  CN, LAT, LON, ELEV
+)
+
+FIACO_data <- full_join(FIACO_data, CO.PLOT, by = c("PLT_CN" = "CN"))
+FIACO_data <- na.omit(FIACO_data)
+
+head(FIACO_data)
+```
+
+Lookin' good so far! Now we are ready to proceed to the next step and create a spline smooth for the annual maximum temperature, minimum temperature, and precipitation values for the years: 2002 - 2019. In anticipation for dealing with the climate data, let's remove some of the tables to clear some memory  for the next step:
+
+```{r}
+remove(bioCO_plot, carbCO_plot, CO.PLOT, 
+       COforest, mortCO_plot, seedCO_plot, 
+       tpaCO_plot, vitalCO_plot)
+```
+
+
+## Wrangling the ERA-Interim Climate data
+
+First we set the file paths to the data-sets and source the script using the `source()` function, containing the custom functions written by Phong:
+
+```{r}
+file.maxt <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/MAXT.nc" # Maximum temperature
+file.mint <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/MINT.nc" # Minimum temperature
+file.prec <- "C:/Users/jddru/Desktop/ASAENVR/data/era-interim/PREC.nc" # Precipitation
+
+source('C:/Users/jddru/Desktop/ASAENVR/ExploringFIA/load_netcdf.R')
+```
+
+We need to get human-usable times for aggregation and filtering, this needs to be done in a slightly round-about-way to avoid memory issues. (Thus far, I haven't thought of a more elegant way of doing this with our current NETCDF infrastructure.) First let's grab a time series at a location in order to get a mapping from the date index to an actual date:
+
+```{r}
+## Grab series
+era.ts <- getCDF.data(filePath = file.maxt, 
+                       lonRange = c(255,255), 
+                       latRange = c(40.5,40.5), 
+                       timeRange = c(0,14245))
+
+## Convert the time index to date and drop unnecessary cols
+era.ts <- era.ts %>% 
+  mutate(date = ParseNetCDFTime(file.maxt, era.ts)) %>% 
+  select(-(MAXT)) %>% 
+  select(-(lon)) %>% 
+  select(-(lat))
+
+## Parse the date to year, month, date for filtering/aggregation
+era.ts <- era.ts %>% mutate(year = lubridate::year(date),
+                            month = lubridate::month(date),
+                            day = lubridate::day(date))
+head(era.ts)
+```
+
+Now we have a mapping from the the time index to a date. In order to set the indices for the `getCDF.data` function, we'll need to find the time index corresponding to Jan 1 2002. Note that the climate data only goes up through the end of 2017, so we can drop the years 2018 and 2019 from the FIA table. We also need to set-up lat/lon bounds over Colorado, found via Google maps (with some padding):
+
+```{r}
+t.start <- as.numeric(era.ts %>% filter(year == 2002, month == 1, day == 1) %>% select(time))
+t.end <- max(era.ts$time)
+
+lat.max <- 42
+lat.min <- 36
+
+lon.max <- 259.5
+lon.min <- 249.75
+```
+
+Now let's grab the subset of the ERA-Interim climate data:
+
+```{r}
+maxt.df <- getCDF.data(filePath = file.maxt, 
+                       lonRange = c(lon.min,lon.max), 
+                       latRange = c(lat.min,lat.max), 
+                       timeRange = c(t.start,t.end))
+mint.df <- getCDF.data(filePath = file.mint, 
+                       lonRange = c(lon.min,lon.max), 
+                       latRange = c(lat.min,lat.max), 
+                       timeRange = c(t.start,t.end))
+prec.df <- getCDF.data(filePath = file.prec, 
+                       lonRange = c(lon.min,lon.max), 
+                       latRange = c(lat.min,lat.max), 
+                       timeRange = c(t.start,t.end))
+```
+
+Now, let's join the date table to each of these so we can aggregate/filter:
+
+```{r}
+maxt.df <- inner_join(maxt.df, era.ts, by = "time")
+mint.df <- inner_join(mint.df, era.ts, by = "time")
+prec.df <- inner_join(prec.df, era.ts, by = "time")
+```
+
+Now, lets determine the average value for each year for each of these quantities at each coordinate:
+
+```{r}
+maxt.df <- maxt.df %>% group_by(year, lon, lat) %>%
+  summarise(mean.MAXT = mean(MAXT))
+
+mint.df <- mint.df %>% group_by(year, lon, lat) %>%
+  summarise(mean.MINT = mean(MINT))
+
+prec.df <- prec.df %>% group_by(year, lon, lat) %>%
+  summarise(mean.PREC = mean(PREC))
+```
+
+Now let's fit a GAM to the data so we can interpolate between the observations. For now let's consider models where we have smooths for the latitude and longitude for each year (this is accomplished with a `by` specification in the smooth function/wrapper), and a mean intercept for each year:
+
+$$
+y = \mu_{\mbox{year}} + f(\mbox{lon}| \mbox{year}) + f(\mbox{lat}|\mbox{year})+\epsilon
+$$
+
+Including an interaction improves. the model performance, but takes more time and eats up an additional 60 or so degrees of freedom.
+
+```{r}
+maxt.smooth <- gam(mean.MAXT ~ s(lon, k = 8, by = factor(year)) + 
+                     s(lat, k = 8, by = factor(year)) +
+                     factor(year),
+                   data = maxt.df)
+
+mint.smooth <- gam(mean.MINT ~ s(lon, k = 8, by = factor(year)) + 
+                     s(lat, k = 8, by = factor(year)) + 
+                     factor(year), 
+                   data = mint.df)
+
+prec.smooth <- gam(mean.PREC ~ s(lon, k = 8, by = factor(year)) + 
+                     s(lat, k = 8, by = factor(year)) + 
+                     factor(year), 
+                   data = prec.df)
+
+summary(maxt.smooth)
+summary(mint.smooth)
+summary(prec.smooth)
+```
+
+As observed before, the temperature is easier to smooth (i.e. yields better diagnostics) but the precipitation is a little more difficult to smooth. As we progress, it may be necessary to refine these smooths, or apply a different prediction/interpolation method.
+
+Now we can make predictions (the smooth/model can be refined for the future, but let's boldly proceed). First we need to drop the years 2018 and 2019 from the `FIAC_data` table:
+
+```{r}
+FIACO_data <- FIACO_data %>% filter(YEAR < 2018)
+```
+
+Now, we generate predictions from each of these models, and add it to the `FIACO_data` table:
+
+```{r}
+maxt.predict <- predict(maxt.smooth, 
+                        newdata = data.frame(year = FIACO_data$YEAR, 
+                                             lon = 360 - FIACO_data$LON, 
+                                             lat = FIACO_data$LAT))
+
+mint.predict <- predict(mint.smooth,
+                        newdata = data.frame(year = FIACO_data$YEAR, 
+                                             lon = 360 - FIACO_data$LON, 
+                                             lat = FIACO_data$LAT))
+
+prec.predict <- predict(prec.smooth,
+                        newdata = data.frame(year = FIACO_data$YEAR, 
+                                             lon = 360 - FIACO_data$LON, 
+                                             lat = FIACO_data$LAT))
+
+FIACO_data <- FIACO_data %>% mutate(MAXT.PRED = maxt.predict,
+                                    MINT.PRED = mint.predict,
+                                    PREC.PRED = prec.predict)
+
+head(FIACO_data)
+```
+
+Now we have a data-table to examine!
+
+Let's do a little housekeeping to make sure we have enough memory (the GAM objects are 2-3 Mb each):
+
+```{r}
+remove(era.ts, 
+       maxt.df, maxt.smooth, 
+       mint.df, mint.smooth, 
+       prec.df, prec.smooth,
+       maxt.predict, mint.predict, prec.predict)
+```
+
+
+## Unsupervised Learning Approach
+
+Let's apply a k-means clustering approach to examine any structure in the data. Let's drop the `PLOT_CN` and`PLOT_STATUS_CD` column as it will not be useful for this procedure.
+
+```{r}
+FIACO_data <- FIACO_data %>% select(-c(PLT_CN, PLOT_STATUS_CD))
+head(FIACO_data)
+```
+
+Now we can perform a k-means clustering. A sweet tutorial is available [here](https://uc-r.github.io/kmeans_clustering). Note that $k = 4,5,6$ seems appropriate: see the elbow plot below:
+
+```{r}
+set.seed(123)
+FIA.clust <- kmeans(FIACO_data, centers = 5, nstart = 25)
+FIA.clust
+```
+
+
+Let's visualize this using the `fviz_cluster` from the `factoextra` package in the variance/covariance eigen-space:
+
+```{r}
+factoextra::fviz_cluster(FIA.clust, data = FIACO_data,
+                         ellipse = TRUE,
+                         labelsize = 0,
+                         show.clust.cent = TRUE)
+```
+
+Let's also determine the optimum number of clusters using the elbow method (I couldn't manage to compute the gap-statistic method):
+
+Elbow plot (this takes a while):
+```{r}
+set.seed(1)
+factoextra::fviz_nbclust(FIACO_data, kmeans, method = "wss", k.max = 10)
+```
+
+Let's add on the cluster label to our data-frame:
+
+```{r}
+FIACO_data <- FIACO_data %>% mutate(CLUST = FIA.clust$cluster)
+
+head(FIACO_data)
+```
+
+In doing this, we can see if the cluster form some sort of spatial structure:
+
+```{r}
+ggplot(FIACO_data, aes(x = LON, y = LAT, color = factor(CLUST))) + 
+  geom_point() +
+  facet_wrap(~factor(YEAR))
+```
+
+I don't really observe very much change over time. Let's try a principle component analysis (remove the `CLUST` variable as it is a nominal label) to see how these variables are related to each other:
+
+```{r}
+FIACO.princomp <- prcomp(FIACO_data %>% select(-(CLUST)), scale = TRUE)
+```
+
+Scree plot of the components:
+
+```{r}
+factoextra::fviz_eig(FIACO.princomp)
+```
+
+It looks like 4 or 5 should be sufficient based on the elbow method. Three components explains a little over 50% of the variability in the data.
+
+Let's see how the variables compare to the components:
+
+```{r}
+factoextra::fviz_pca_var(FIACO.princomp, 
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+             )
+```
+
+The first component summarizes most of (if not all) the the ecological estimates from the FIA data. The second component is a contrast between precipitation and the temperatures & year. This is a tad unfortunate, since this essentially indicates that the climate variables (on the second component) are orthogonal to the ecological variables (on the first component). In Colorado, it seems to be the case that in the past decade and a half, the climate has not had much of an effect on the forest ecology of the state. 
+
+## Remarks
+
+The analysis above indicates that the climate and forest data form natural spatial groups in the state of CO. However, it seems that the climate and fores ecology estimates are independent of one-another. This is somewhat disappointing, and is likely due to the narrow temporal scope of the FIA data only containing observations from 2002 to 2017. The following paths could be taken (besides correcting the general approach outlined here):
+
+  * Examine a larger area, e.g. the entire intermountain west, west coast, etc... instead of a single state. Given the constraint of a  short time scale, it may be the case that we observe changes over a large area.
+  
+  * Do the opposite: look at smaller area, in particular, a region that has had an observed die-back of a species or increased deforestation and examine the climate data is influential. It might be the case that a region like this has more extensive data into the past as the result of conservation or academic projects.
+  
+  * Consider different forest ecology variables, or change the modeling approach described in this notebook.
+  
+  * Move on to something else :)
+  
+  
+
+
+
+
+
+
+
+

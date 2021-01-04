@@ -1,0 +1,428 @@
+---
+title: "Querying and Analyzing USFS FIA Data"
+output: html_notebook
+---
+
+## Introduction
+
+Fortunately, there is an R package designed to query the Forest Inventory and Analysis database. This package requires that JAGS be installed as well (a good excuse to learn some Bayesian modeling, I suppose!). The creators of the package also have a comprehensive website on how to use the package: https://rfia.netlify.app/
+Data can also be obtained from the FIA DataMart https://apps.fs.usda.gov/fia/datamart/CSV/datamart_csv.html, but the rFIA package queries this source directly in addition to the various estimates related to the FIA analysis. The FIA user guide is here: https://www.fia.fs.fed.us/library/database-documentation/current/ver72/FIADB%20User%20Guide%20P2_7-2_final.pdf, and lists the different tables and variables in the tables, among many other items relevant to the data set. 
+
+```{r, warning = FALSE, message = FALSE}
+library(rFIA)
+library(dplyr)
+library(ggplot2)
+library(rpart)
+library(patchwork)
+```
+
+Let's look a the forests of Colorado (which is about 91 MB -which is not so bad compared to the climate model data-sets!). Uncomment to download the tables:
+
+```{r}
+## Uncomment to download data
+# COforest <- getFIA(states = "CO", dir = getwd())
+
+## Uncomment to read in existing data
+COforest <- readFIA("C:/Users/jddru/Desktop/ASAENVR/ExploringFIA")
+```
+
+Let's take a peak at the `TREE` table, which is the largest table in the download, and has the relevant measurements for a sample of trees in a plot. 
+
+```{r}
+CO.TREE <- COforest$TREE
+CO.PLOT <- COforest$PLOT
+CO.TREE
+```
+
+## Wrangling the tables
+
+The `TREE` table contains a good deal of the relevant information regarding the trees in a plot area. We also may want to look at other tables too, which may contain relevant information. In order to get the location (in geographic coordinates) of a plot, this table must be joined with `PLOT` table where the `PLT_CN` is a foreign key linking the tables together. As we can see, there are over 200 different variables in the `TREE` table. 
+
+Mostly for practice, let's select a subset of variables from the `TREE` table and the geographic information from `PLOT`, and join the tables, to make it more manageable:
+
+```{r}
+CO.tree <- CO.TREE %>% select(
+  ## Grab ID and location/plot information...
+  CN, PLT_CN, INVYR, UNITCD, COUNTYCD, PLOT, SUBP, TREE, CONDID, AZIMUTH, DIST,
+  ## Relavent tree measurment...
+  STATUSCD, SPCD, DIA, DIAHTCD, HT, HTCD, ACTUALHT, TREECLCD, CR, CCLCD,
+  ## Enviromental factors
+  AGENTCD, CULL, DECAYCD)
+
+CO.plot <- CO.PLOT %>% select(
+  ## Grab ID and location information..
+  CN, LAT, LON, ELEV
+)
+
+## Join the subsets of tables together
+
+CO.forest <- full_join(CO.tree, CO.plot, by = c("PLT_CN" = "CN"))
+CO.forest
+```
+
+And a summary:
+```{r}
+summary(CO.forest)
+```
+
+Let's count the number of species of trees in Colorado and see which are the most prevalent:
+
+```{r}
+CO.forest %>% count(SPCD, sort = TRUE) %>% mutate(percent = round(100 * n / sum(n),3))
+```
+
+Looking at the top 5 trees by quantity (about 63.8% of all trees in CO) we have:
+
+  * 746 is quaking aspen (my favorite),
+  * 93 Engelmann spruce,
+  * 108 lodgepole pine,
+  * 814 Gambel oak,
+  * 19 subalpine fir
+  
+Let's filter by these five species:
+
+```{r}
+CO.forestSub <- CO.forest %>% filter(SPCD %in% c(746,93,108,814,19))
+CO.forestSub
+```
+
+## Preliminary Plotting
+
+Let's make a plot of Colorado, and see where these plot locations are:
+
+```{r}
+## Get location of each plot to avoid over-plotting
+CO.plotLocs <- CO.forest %>% 
+  select(PLOT, LAT, LON) %>% 
+  distinct(PLOT, .keep_all = TRUE)
+
+ggplot(data = CO.plotLocs, aes(x = LON, y = LAT)) +
+  geom_point(size = 0.2, alpha = 0.5) +
+  borders("county","colorado",colour="grey70") +
+  borders("state", size = 2) +
+  xlab("Longitude") + ylab("Latitude") +
+  ggtitle("Plot of FIA Plot Locations for Colorado") +
+  scale_x_continuous(breaks = seq(from = -109.5, to = 101.25, by = 1)) +
+  coord_fixed(ratio = 1.25, xlim = c(-108.95,-102.2), ylim = c(37,41.1))
+  
+```
+
+Let's look a just a single year to start, like 2018, and plot the distribution of trees across the state:
+
+```{r}
+## Filter to year 2018
+forest2018 <- CO.forestSub %>% filter(INVYR == 2018)
+
+ggplot(data = forest2018, aes(x = LON, y = LAT, color = factor(SPCD))) +
+  geom_point(alpha = 0.5) +
+  borders("county","colorado",colour="grey70") +
+  borders("state", size = 1) +
+  xlab("Longitude") + ylab("Latitude") +
+  ggtitle("Plot of Top 5 Tree Species in Colorado") +
+  scale_x_continuous(breaks = seq(from = -109.5, to = 101.25, by = 1)) +
+  coord_fixed(ratio = 1.25, xlim = c(-108.95,-102.2), ylim = c(37,41.1)) +
+  facet_wrap(~factor(SPCD))
+
+```
+
+Let's also see if there is a dependence of elevation on these specie, i.e. do the different species lie on different strata of elevation:
+
+```{r}
+ggplot(data = forest2018, aes(y = ELEV, x = factor(SPCD), fill = factor(SPCD))) +
+  geom_violin() +
+  xlab("Species ID")+
+  ylab("Elevation") +
+  ggtitle("Elevation Distribution for the Top 5 Species")
+```
+
+We can see that these trees are located at differing altitudes with the Engelmann Spruce (19) at the highest, and Gambel Oak (814) at the lowest.
+
+Let's look at species 93 (Engelmann Spruce) attributes across time and see if anything interesting is apparent in the subset of the `TREE` table:
+
+```{r}
+CO.ESpruce <- CO.forestSub %>% filter(SPCD == 93)
+CO.ESpruce
+```
+
+The `STATUSCD` variable gives information about whether the sample tree is live, cut, or dead at the time of measurement. Let's see how this changes over time for the lodgepole pines. From the documentation we have:
+
+ * 0 = No status 
+ * 1 = Live tree
+ * 2 = Dead tree
+ * 3 = Removed (cut by human activity due to harvesting, silviculture or land clearing.)
+
+```{r}
+ESpruce.time <- CO.ESpruce %>% group_by(INVYR) %>% count(STATUSCD)
+ESpruce.time
+```
+
+Let's also look at totals across status and year:
+```{r}
+CO.ESpruce %>% group_by(STATUSCD) %>% count()
+total.ESpruce <- CO.ESpruce %>% group_by(INVYR) %>% count()
+total.ESpruce
+```
+
+Let's plot this:
+
+```{r}
+ggplot(data = ESpruce.time, aes(x = INVYR, y = n, color = factor(STATUSCD))) +
+  geom_line() +
+  geom_point()
+```
+
+Let's generate a similar plot for the quaking aspen (which has seen a dieback since the 1990s):
+
+```{r}
+## Filter for aspen
+CO.Aspen <- CO.forestSub %>% filter(SPCD == 746)
+
+## Group by the STATUSCD
+Aspen.time <- CO.Aspen %>% group_by(INVYR) %>% count(STATUSCD)
+
+## Look at totals  by status table:
+CO.Aspen %>% group_by(STATUSCD) %>% count()
+
+## Look at the total numbers across years table:
+total.Aspen <- CO.Aspen %>% group_by(INVYR) %>% count()
+total.Aspen
+```
+
+
+Once again, let's look at a plot:
+
+```{r}
+ggplot(data = Aspen.time, aes(x = INVYR, y = n, color = factor(STATUSCD))) +
+  geom_line() +
+  geom_point()
+```
+
+In both cases, we can see that overall number of pines and aspens has decreased, and the number of recorded dead trees has increases over time.
+
+As an aside, we can also look at different variables associated with trees to study their characteristics. For example we can look at tree height (it is reasonable to treat tree height as a proxy for age, since it is not unreasonable to assume older trees are taller) vs. elevation, latitude, and longitude, for the five selected species in the year 2018, and color the points based on the `STATUSCD` variable to see if an groupings/clusterings emerge, based on spatial variables. (I've been putting the plots into a new window, to perform the 'ol jewelers loupe inspection on these).  First for elevation:
+
+```{r}
+ggplot(data = forest2018, aes(x = ELEV, y = HT, color = factor(STATUSCD))) +
+  geom_point(size = 1, alpha = 0.25, aes(color = factor(STATUSCD))) +
+  facet_wrap(~(factor(SPCD))) +
+  ggtitle("Height vs. Elevation")
+```
+
+Recall 1 in green are live trees, and 2 in blue are dead trees.
+
+The Engelmann spruce (93) seems to have more dead trees clustered at higher elevations (>10,000ft or so), and the others are more or less scattered. We do see an increase in dead trees for the lodgpole pine (108) at it's lower elevations (between 8,000-9,500 ft). Height doesn't seem to have a strong impact on the proportion of dead vs. alive trees.
+
+For Latitude:
+
+```{r}
+ggplot(data = forest2018, aes(x = LAT, y = HT, color = factor(STATUSCD))) +
+  geom_point(size = 1, alpha = 0.25, aes(color = factor(STATUSCD))) +
+  facet_wrap(~(factor(SPCD))) +
+  ggtitle("Height vs. Latitude")
+```
+
+Once again the spruce and pine (93, and 108) so some clustering based on latitude, namely there are more dead spruce in the southern parts of the state, and there are more dead pines in the norther part. There does seem to be a cluster of dead pines at about 37.5 degrees, and there may be a marginal impact of height on the number of dead pines.
+
+For Longitude:
+
+```{r}
+ggplot(data = forest2018, aes(x = LON, y = HT, color = factor(STATUSCD))) +
+  geom_point(size = 1, alpha = 0.25, aes(color = factor(STATUSCD))) +
+  facet_wrap(~(factor(SPCD))) +
+  ggtitle("Height vs. Longitude")
+```
+
+The spruce shows a cluster of dead trees in the middle-west part of the state (along -107 degrees), whereas all the other species are scattered. Height doesn't seem to have much of an impact.
+
+For diameter: 
+
+```{r}
+ggplot(data = forest2018, aes(x = DIA, y = HT, color = factor(STATUSCD))) +
+  geom_point(size = 1, alpha = 0.25, aes(color = factor(STATUSCD))) +
+  facet_wrap(~(factor(SPCD))) + 
+  ggtitle("Height vs. Diameter")
+```
+
+Here, we can see that there is a slight impact of height on the status of the tree, namely taller trees are more often found dead that shorter trees, in particular for the pine and spruce. The exception to this is the Gambel oak, which tends to be a shorter tree. There is a strong linear relationship between the height and the diameter of the tree with strong non-constant variance as diameter and height increase. 
+
+The lodgepole pine and  Engelmann spruce seems to have the most death records, and show some degree of spatial pattern in the plots/observations above. For these species it may be interesting to to see the evolution of the `STATUSCD` over time. Filtering by species 93 and by status code 2, which corresponds to dead Engelmann Spruce, we can make similar spatial plots as above:
+
+```{r}
+ESpruce.timeDead <- CO.ESpruce %>% filter(STATUSCD == 2)
+```
+
+Looking at longitude vs. latitude:
+
+```{r}
+ggplot(data = ESpruce.timeDead, aes(x = LON, y = LAT, color = factor(INVYR))) +
+  geom_point(size = 1, alpha = 0.25, aes(color = factor(INVYR))) +
+  facet_wrap(~(factor(INVYR)))
+```
+
+And height vs. longitude:
+
+```{r}
+ggplot(data = ESpruce.timeDead, aes(x = LAT, y = HT, color = factor(INVYR))) +
+  geom_point(size = 1, alpha = 0.25, aes(color = factor(INVYR))) +
+  facet_wrap(~(factor(INVYR)))
+```
+
+It may be better to visualize these plots as 2-D density plots (the lat/lon plot in particular). We also may want to look beyond just Colorado for some spatial patterns (e.g. across the entire inter-mountain west).
+
+## Using the FIA Estimates
+
+Part of the `rFIA` package are a whole host of unctions to estimate various forest parameters. The website listed in the introduction has descriptions of these. In their tutorial they provide instructions for determining abundance estimates. We shall see that the analysis below describes the same sort of behavior in the analysis above, namely the number of trees are decreasing across the the state and the mortality is increasing. We also observe that some trees are more impacted by mortality that others.
+
+Since we seem interested in time dependent behavior, lets construct a time series plot for the abundance (takes a moment to run):
+
+```{r}
+## All inventory years available and dissaggregate by species and size
+
+tpaCO <- tpa(COforest, variance = TRUE)
+tpaCO_species <- tpa(COforest, bySpecies = TRUE)
+tpaCO_sizeClass <- tpa(COforest, bySizeClass = TRUE)
+```
+
+Overall time-series plot:
+```{r}
+plotFIA(tpaCO, y = BAA, 
+        plot.title = "Colorado Abundance Time Series")
+```
+
+We see an overall decreasing trend by year. One advantage to use these functions, is we can obtain the EVALIDator (FIA's flagship estimation tool) to obtain estimates of uncertainty:
+
+```{r}
+tpaCO %>% select(YEAR, BAA, BAA_PERC_VAR, N)
+```
+
+We can also dis-aggregate based on the species, just as before:
+
+```{r}
+plotFIA(tpaCO_species, y = BAA, grp = COMMON_NAME, 
+        n.max = 10, 
+        plot.title = "Colorado Abundance By Species")
+```
+
+We can also estimate the biomass of standing trees:
+
+```{r}
+CO_bio <- biomass(COforest, variance = TRUE)
+CO_bio
+```
+
+Plotting the net volume per acre:
+
+```{r}
+plotFIA(CO_bio, y = NETVOL_ACRE, plot.title = "Colorado Biomass Estimates")
+```
+
+Mortality and harvest rates:
+
+```{r}
+CO_mort <- growMort(COforest, variance = TRUE)
+CO_mort
+```
+
+Let's look at a plot of the mortality rates:
+
+```{r}
+plotFIA(CO_mort, y = MORT_TPA, plot.title = "Colorado Mortality Estimates")
+```
+
+From an environmental/greenhouse gas perspective, it may be interesting to examine the estimate of carbon stocks:
+
+```{r}
+CO_carbon <- carbon(COforest, variance = TRUE)
+CO_carbon
+```
+
+Plotting this yields:
+```{r}
+plotFIA(CO_carbon, y = CARB_ACRE, 
+        grp = POOL, 
+        plot.title = "Colorado Carbon Abundance Estimates")
+```
+
+We could carry out the same procedure for examining bio-diversity, invasive species indices, seedling abundance, etc... The nice thing about using these functions, is that we can easily access these estimates for modeling with other data, and generate confidence intervals for these estimates, in the event that we'd like to perform a statistical test or make inferences about the population. 
+
+## Some preliminary modeling (needs more work)
+
+In the above analysis, we do observe some trends in the data. It may be germane to investigate some modeling in order to understand the overall structrue of the data. This will also enable us to include the climate data and observe and associations, should they exist, between the forest data and the climate data. In order to proceed, I'll make use of the estimate functions explored prevously. We can obtain estimates at the plot level in order to examine any spatial variation.
+
+```{r, warning = FALSE}
+## Abundance
+tpaCO_plot <- tpa(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(PLT_CN, YEAR, PLOT_STATUS_CD, TPA, BAA, nStems)
+
+## Biomass
+bioCO_plot <- biomass(COforest, grpBy = PLOT, byPlot = TRUE, treeType = 'all') %>%
+  select(-c(pltID, PLOT))
+
+## Mortality
+mortCO_plot <- growMort(COforest, byPlot = TRUE, treeType = 'all') %>%
+  select(PLT_CN, YEAR, PLOT_STATUS_CD, TOTAL_TPA)
+
+## Carbon
+carbCO_plot <- carbon(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(-c(pltID, PLOT, POOL)) %>% 
+  group_by(PLT_CN) %>%
+  summarise(CARB_TOT = sum(CARB_ACRE))
+
+## seedling abundance
+seedCO_plot <- seedling(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(-c(pltID, PLOT, TPA_PERC, nStems))
+
+## vital information
+vitalCO_plot <- vitalRates(COforest, grpBy = PLOT, byPlot = TRUE) %>%
+  select(-(pltID))
+```
+
+Lets join these tables (all but invasive species since this mostly consists of text/categorical information -we could one-hot encode this for use later):
+
+```{r}
+COtrees <- inner_join(tpaCO_plot, bioCO_plot, by = 'PLT_CN') %>%
+  inner_join(., mortCO_plot, by = 'PLT_CN') %>%
+  inner_join(., carbCO_plot, by = 'PLT_CN') %>%
+  inner_join(., seedCO_plot, by = 'PLT_CN') %>%
+  inner_join(., vitalCO_plot, by = 'PLT_CN')
+
+COtrees
+```
+
+
+
+There are many variables, it it is becoming a little cumbersome to plot and control for variables in plots/tables. In order to understand the behavior of the trees in Colorado, it may be useful to fit a subset of the variables via a regression tree. Namely, we would like predict or see what variables influence the `STATUSCD` variable. To begin let's try just a single year, such as 2018. Let's select a subset of variables relevant to this (i.e. exclude identification variables, variables with too many missing values etc...)
+
+```{r}
+## Select subset
+forest2018.sub <- forest2018 %>% 
+  select(STATUSCD, SPCD, DIA, HT, TREECLCD, CR, CCLCD, CULL, LAT, LON, ELEV)
+
+## Recode some variables as factors
+forest2018.sub$STATUSCD <- factor(forest2018.sub$STATUSCD)
+forest2018.sub$SPCD <- factor(forest2018.sub$SPCD)
+forest2018.sub$TREECLCD <- factor(forest2018.sub$TREECLCD)
+forest2018.sub$CCLCD <- factor(forest2018.sub$CCLCD)
+
+
+## Fit a regression tree (pun intended)
+CO.TreeMod2018 <- rpart(STATUSCD ~ ., 
+                    forest2018.sub,
+                    method = "class")
+plot(CO.TreeMod2018, compress = T, uniform = T, branch = 0.4, main = "Reg Tree")
+text(CO.TreeMod2018)
+```
+
+This is maybe a bit dissapointing, but let's try the same approach with k-means clustering:
+
+```{r}
+set.seed(1)
+kmeans(na.omit(forest2018.sub), 5)
+```
+
+
+
+
+
+
+
